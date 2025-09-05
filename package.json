@@ -6,7 +6,7 @@
 		"dev": "next dev --turbopack",
 		"build": "next build --turbopack",
 		"start": "next start",
-		"lint": "next lint --config eslint.config.mjs",
+		"lint": "eslint --config eslint.config.mjs .",
 		"format": "prettier --write . --config .prettierrc.json",
 		"deploy": "npm run format && npm run lint --max-warnings=0 && vercel --prod"
 	},
