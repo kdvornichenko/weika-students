@@ -1,6 +1,6 @@
 'use client'
 
-import * as React from 'react'
+import { useCallback, useEffect, useState } from 'react'
 
 import { format } from 'date-fns'
 import { ru } from 'date-fns/locale'
@@ -15,6 +15,7 @@ import { listStudentEvents, updateInstance, deleteOneOccurrence } from '@/lib/ca
 
 import DateField from './date-field'
 
+/** Минимальная модель события из календаря */
 type Row = {
 	id: string
 	recurringEventId?: string
@@ -30,25 +31,29 @@ export default function StudentLessonsCard({
 	studentId: string
 	calendarId?: string
 }) {
-	const [rows, setRows] = React.useState<Row[]>([])
-	const [loading, setLoading] = React.useState(true)
-	const [error, setError] = React.useState<string | null>(null)
+	const [rows, setRows] = useState<Row[]>([])
+	const [loading, setLoading] = useState(true)
+	const [error, setError] = useState<string | null>(null)
 
-	const reload = React.useCallback(async () => {
+	const reload = useCallback(async () => {
 		try {
 			setLoading(true)
 			setError(null)
 			const { items } = await listStudentEvents(studentId, { calendarId, days: 365 })
 			setRows(items)
-		} catch (e: any) {
-			setError(e.message || 'Ошибка загрузки')
+		} catch (e) {
+			if (e instanceof Error) {
+				setError(e.message)
+			} else {
+				setError('Ошибка загрузки')
+			}
 		} finally {
 			setLoading(false)
 		}
 	}, [studentId, calendarId])
 
-	React.useEffect(() => {
-		reload()
+	useEffect(() => {
+		void reload()
 	}, [reload])
 
 	return (
@@ -138,11 +143,11 @@ function EditInstanceDialog({
 	initialDurationMins: number
 	onSave: (start: Date, durationMins: number) => Promise<void>
 }) {
-	const [open, setOpen] = React.useState(false)
-	const [date, setDate] = React.useState<Date | null>(initialStart ?? null)
-	const [time, setTime] = React.useState(initialStart ? format(initialStart, 'HH:mm') : '')
-	const [duration, setDuration] = React.useState<number>(initialDurationMins)
-	const [saving, setSaving] = React.useState(false)
+	const [open, setOpen] = useState(false)
+	const [date, setDate] = useState<Date | null>(initialStart ?? null)
+	const [time, setTime] = useState(initialStart ? format(initialStart, 'HH:mm') : '')
+	const [duration, setDuration] = useState<number>(initialDurationMins)
+	const [saving, setSaving] = useState(false)
 
 	function makeStart(): Date | null {
 		if (!date) return null

@@ -6,7 +6,18 @@ import * as React from 'react'
 import { useForm, type Resolver, type SubmitHandler } from 'react-hook-form'
 
 import { format } from 'date-fns'
-import { Timestamp, addDoc, collection, doc, serverTimestamp, updateDoc } from 'firebase/firestore'
+import {
+	Timestamp,
+	addDoc,
+	collection,
+	doc,
+	serverTimestamp,
+	updateDoc,
+	type DocumentData,
+	type FirestoreDataConverter,
+	type UpdateData,
+	type WithFieldValue,
+} from 'firebase/firestore'
 import Link from 'next/link'
 import { z } from 'zod'
 
@@ -17,7 +28,7 @@ import { Label } from '@/components/ui/label'
 import { Separator } from '@/components/ui/separator'
 import { Textarea } from '@/components/ui/textarea'
 import { db, auth } from '@/lib/firebase'
-import type { StudentWrite } from '@/types/student'
+import type { StudentDoc, StudentWrite } from '@/types/student'
 
 import DateField from './date-field'
 
@@ -33,20 +44,24 @@ const schema = z.object({
 	price_per_lesson: z.coerce.number().optional(),
 	price_total: z.coerce.number().optional(),
 })
-
 export type StudentFormValues = z.infer<typeof schema>
 
 export type StudentFormProps = {
 	mode: 'create' | 'edit'
 	docId?: string
-	initial?: any
+	initial?: StudentDoc
 }
 
-function tsToDate(v: any | null | undefined): Date | null {
+const studentConverter: FirestoreDataConverter<StudentDoc> = {
+	toFirestore: (data: StudentDoc): DocumentData => data as DocumentData,
+	fromFirestore: (snap, options): StudentDoc => snap.data(options) as StudentDoc,
+}
+
+function tsToDate(v: Timestamp | Date | null | undefined): Date | null {
 	if (!v) return null
 	if (v instanceof Date) return v
-	if (typeof v?.toDate === 'function') return v.toDate()
-	return new Date(v)
+	if (v instanceof Timestamp) return v.toDate()
+	return null
 }
 
 function packDateTime(date: Date | null | undefined, timeHHMM: string | null | undefined): Timestamp | null {
@@ -110,40 +125,41 @@ export default function StudentForm({ mode, docId, initial }: StudentFormProps) 
 		}
 
 		try {
+			const studentsCol = collection(db, 'students').withConverter(studentConverter)
+
 			let studentId = docId
 
 			if (mode === 'create') {
-				const ref = await addDoc(collection(db, 'students'), { ...payload, createdAt: serverTimestamp() })
+				const createData: WithFieldValue<StudentDoc> = {
+					...(payload as unknown as WithFieldValue<StudentDoc>),
+					createdAt: serverTimestamp(),
+				}
+				const ref = await addDoc(studentsCol, createData)
 				studentId = ref.id
 			} else {
-				await updateDoc(doc(db, 'students', docId!), payload as any)
+				const ref = doc(studentsCol, docId!)
+				const updateData: UpdateData<StudentDoc> = payload as unknown as UpdateData<StudentDoc>
+				await updateDoc(ref, updateData)
 			}
 
+			// ——— при наличии следующего урока — создаём/обновляем событие в календаре ———
 			if (studentId && nextTs) {
 				const startISO = nextTs.toDate().toISOString()
 				const durationMins = 60
 				const token = await auth.currentUser?.getIdToken()
 
-				// не блокируем сохранение, но даём знать в консоль/можно повесить тост
-				try {
-					await fetch('/api/calendar/upsert', {
-						method: 'POST',
-						headers: {
-							'Content-Type': 'application/json',
-							Authorization: `Bearer ${token}`,
-						},
-						body: JSON.stringify({
-							studentId,
-							title: `Урок: ${values.name}`,
-							description: values.description,
-							startISO,
-							durationMins,
-							timeZone: 'Europe/Stockholm',
-						}),
-					})
-				} catch (e) {
-					console.warn('Calendar upsert failed:', e)
-				}
+				await fetch('/api/calendar/upsert', {
+					method: 'POST',
+					headers: { 'Content-Type': 'application/json', Authorization: `Bearer ${token}` },
+					body: JSON.stringify({
+						studentId,
+						title: `Урок: ${values.name}`,
+						description: values.description,
+						startISO,
+						durationMins,
+						timeZone: 'Europe/Stockholm',
+					}),
+				}).catch((e) => console.warn('Calendar upsert failed:', e))
 			}
 
 			window.location.href = '/students'
@@ -207,7 +223,6 @@ export default function StudentForm({ mode, docId, initial }: StudentFormProps) 
 									onChange={(d) => form.setValue('payment_next', d)}
 								/>
 							</div>
-
 							<div className="space-y-2">
 								<Label>Последняя оплата</Label>
 								<DateField

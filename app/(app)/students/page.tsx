@@ -3,14 +3,40 @@
 import { useEffect, useState } from 'react'
 
 import { onAuthStateChanged } from 'firebase/auth'
-import { collection, doc, onSnapshot, orderBy, query, where } from 'firebase/firestore'
+import {
+	collection,
+	doc,
+	onSnapshot,
+	orderBy,
+	query,
+	where,
+	type DocumentData,
+	type FirestoreDataConverter,
+} from 'firebase/firestore'
 import Link from 'next/link'
 
 import { Badge } from '@/components/ui/badge'
 import { Button } from '@/components/ui/button'
 import { Card } from '@/components/ui/card'
 import { auth, db } from '@/lib/firebase'
+import type { StudentDoc } from '@/types/student'
 
+// даты как Timestamp и пр.
+
+// --- Firestore converters (без any) ---
+const studentConverter: FirestoreDataConverter<StudentDoc> = {
+	toFirestore: (data: StudentDoc): DocumentData => data as DocumentData,
+	fromFirestore: (snap, options): StudentDoc => snap.data(options) as StudentDoc,
+}
+
+type UserDoc = { calendarConnected?: boolean }
+
+const userConverter: FirestoreDataConverter<UserDoc> = {
+	toFirestore: (data: UserDoc): DocumentData => data as DocumentData,
+	fromFirestore: (snap, options): UserDoc => snap.data(options) as UserDoc,
+}
+
+// --- UI-строки списка ---
 type Row = {
 	id: string
 	name: string
@@ -25,19 +51,31 @@ export default function StudentsPage() {
 	// следим за авторизацией
 	useEffect(() => onAuthStateChanged(auth, (u) => setUid(u?.uid ?? null)), [])
 
-	// подписка на список учеников
+	// подписка на список учеников (типизировано)
 	useEffect(() => {
 		if (!uid) return
-		const q = query(collection(db, 'students'), where('ownerId', '==', uid), orderBy('name'))
-		return onSnapshot(q, (snap) => setRows(snap.docs.map((d) => ({ id: d.id, ...(d.data() as any) }))))
+
+		const studentsRef = collection(db, 'students').withConverter(studentConverter)
+		const q = query(studentsRef, where('ownerId', '==', uid), orderBy('name'))
+
+		return onSnapshot(q, (snap) => {
+			const next: Row[] = snap.docs.map((d) => {
+				const s = d.data() // StudentDoc
+				const amount = s.lessons?.amount
+				const current = s.lessons?.current
+				const lessons = amount !== undefined || current !== undefined ? { amount, current } : undefined
+				return { id: d.id, name: s.name, lessons }
+			})
+			setRows(next)
+		})
 	}, [uid])
 
-	// подписка на профиль пользователя → calendarConnected
+	// подписка на профиль пользователя → calendarConnected (типизировано)
 	useEffect(() => {
 		if (!uid) return
-		const ref = doc(db, 'users', uid)
-		return onSnapshot(ref, (snap) => {
-			const data = snap.data() as any | undefined
+		const userRef = doc(db, 'users', uid).withConverter(userConverter)
+		return onSnapshot(userRef, (snap) => {
+			const data = snap.data()
 			setCalendarConnected(Boolean(data?.calendarConnected))
 		})
 	}, [uid])
@@ -46,7 +84,6 @@ export default function StudentsPage() {
 	async function connectCalendar() {
 		const user = auth.currentUser
 		if (!user) return
-
 		const token = await user.getIdToken(true)
 		const url = new URL('/api/google/auth', window.location.origin)
 		url.searchParams.set('token', token)

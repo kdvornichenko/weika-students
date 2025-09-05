@@ -1,3 +1,5 @@
+import type { FirestoreDataConverter, DocumentData } from 'firebase-admin/firestore'
+import type { calendar_v3 } from 'googleapis'
 import { NextRequest, NextResponse } from 'next/server'
 
 import { adminAuth, adminDb } from '@/lib/firebaseAdmin'
@@ -12,6 +14,13 @@ export type UpsertBody = {
 	durationMins: number
 	timeZone?: string
 	recurrence?: string[]
+}
+
+type StudentCalendarMeta = {
+	calendar?: {
+		calendarId?: string
+		calendarEventId?: string
+	}
 }
 
 export async function POST(req: NextRequest) {
@@ -35,7 +44,7 @@ export async function POST(req: NextRequest) {
 	const start = new Date(startISO)
 	const end = new Date(start.getTime() + Number(durationMins) * 60000)
 
-	const requestBody = {
+	const requestBody: calendar_v3.Schema$Event = {
 		summary: title,
 		description,
 		start: { dateTime: start.toISOString(), timeZone },
@@ -44,18 +53,30 @@ export async function POST(req: NextRequest) {
 		extendedProperties: { private: { studentId } },
 	}
 
-	const sRef = adminDb.doc(`students/${studentId}`)
-	const sSnap = await sRef.get()
-	const existingId = (sSnap.data() as any)?.calendar?.calendarEventId as string | undefined
+	const studentCalendarConverter: FirestoreDataConverter<StudentCalendarMeta> = {
+		toFirestore: (data: StudentCalendarMeta): DocumentData => data,
+		fromFirestore: (snap) => snap.data() as StudentCalendarMeta,
+	}
 
-	let eventId: string
+	const sRef = adminDb.doc(`students/${studentId}`).withConverter(studentCalendarConverter)
+	const sSnap = await sRef.get()
+	const existingId = sSnap.data()?.calendar?.calendarEventId
+
+	let eventId: string | undefined
+
 	if (existingId) {
 		const res = await cal.events.update({ calendarId, eventId: existingId, requestBody })
-		eventId = res.data.id!
+		eventId = res.data.id ?? undefined
 	} else {
 		const res = await cal.events.insert({ calendarId, requestBody })
-		eventId = res.data.id!
-		await sRef.set({ calendar: { calendarId, calendarEventId: eventId } }, { merge: true })
+		eventId = res.data.id ?? undefined
+		if (eventId) {
+			await sRef.set({ calendar: { calendarId, calendarEventId: eventId } }, { merge: true })
+		}
+	}
+
+	if (!eventId) {
+		return NextResponse.json({ ok: false, error: 'No event id returned from Google Calendar' }, { status: 500 })
 	}
 
 	return NextResponse.json({ ok: true, eventId })
