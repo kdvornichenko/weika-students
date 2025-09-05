@@ -1,0 +1,13 @@
+{
+	"plugins": ["@trivago/prettier-plugin-sort-imports", "prettier-plugin-tailwindcss"],
+	"useTabs": true,
+	"trailingComma": "es5",
+	"semi": false,
+	"singleQuote": true,
+	"importOrderSeparation": true,
+	"importOrder": ["^react-scan$", "^react", "^[a-z]", "^@/", "^[./]"],
+	"tailwindFunctions": ["clsx", "cn"],
+	"tailwindStylesheet": "./app/globals.css",
+	"endOfLine": "lf",
+	"printWidth": 120
+}
