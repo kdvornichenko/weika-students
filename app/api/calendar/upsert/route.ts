@@ -1,10 +1,7 @@
-// app/api/calendar/upsert/route.ts
-import type { FirestoreDataConverter, DocumentData } from 'firebase-admin/firestore'
-import { FieldValue as AdminFieldValue } from 'firebase-admin/firestore'
 import type { calendar_v3 } from 'googleapis'
 import { NextRequest, NextResponse } from 'next/server'
 
-import { adminAuth, adminDb } from '@/lib/firebaseAdmin'
+import { adminAuth } from '@/lib/firebaseAdmin'
 import { calendarClientFor } from '@/lib/google'
 
 export type UpsertBody = {
@@ -15,24 +12,11 @@ export type UpsertBody = {
 	startISO: string
 	durationMins: number
 	timeZone?: string
-	recurrence?: string[]
-	/** Идемпотентный ключ от клиента (желателен) */
-	requestId?: string
+	recurrence?: string[] // если есть — создаём/апдейтим именно ЭТУ серию (НЕ трогаем старые серии)
+	requestId?: string // идемпотентность на стороне календаря: studentId + requestId
 }
 
-type StudentCalendarMeta = {
-	calendar?: {
-		calendarId?: string
-		calendarEventId?: string
-	}
-}
-
-const studentCalendarConverter: FirestoreDataConverter<StudentCalendarMeta> = {
-	toFirestore: (data: StudentCalendarMeta): DocumentData => data,
-	fromFirestore: (snap) => snap.data() as StudentCalendarMeta,
-}
-
-// до минут в UTC
+// утилиты времени «до минуты» (UTC)
 function minuteKeyFromISO(iso: string) {
 	return new Date(iso).toISOString().slice(0, 16) // YYYY-MM-DDTHH:MM
 }
@@ -96,49 +80,10 @@ export async function POST(req: NextRequest) {
 				: undefined
 		const isRecurring = Boolean(recurrence && recurrence.length > 0)
 
-		// 3) Calendar client
+		// 3) Calendar client (с проверкой владельца refresh_token)
 		const cal = await calendarClientFor(uid, email)
 
-		// 4) Если есть requestId — быстрый идемпотентный путь через Firestore
-		let reqRef: FirebaseFirestore.DocumentReference<FirebaseFirestore.DocumentData> | undefined = undefined
-		if (requestId) {
-			reqRef = adminDb.doc(`students/${studentId}/requests/${requestId}`)
-			const snap = await reqRef.get()
-			if (snap.exists) {
-				const d = snap.data() as { status?: string; eventId?: string } | undefined
-				if (d?.status === 'done' && d?.eventId) {
-					return NextResponse.json({ ok: true, eventId: d.eventId })
-				}
-			} else {
-				await reqRef.create({
-					createdAt: AdminFieldValue.serverTimestamp(),
-					status: 'pending',
-				})
-			}
-		}
-
-		// 5) Ищем уже созданное событие тем же requestId (если он есть) — для идемпотентности
-		if (requestId) {
-			const timeMin = new Date(start.getTime() - 12 * 60 * 60 * 1000).toISOString() // -12ч
-			const timeMax = new Date(start.getTime() + 12 * 60 * 60 * 1000).toISOString() // +12ч
-			const list = await cal.events.list({
-				calendarId,
-				timeMin,
-				timeMax,
-				singleEvents: true,
-				orderBy: 'startTime',
-				maxResults: 50,
-				privateExtendedProperty: [`studentId=${studentId}`, `requestId=${requestId}`],
-				showDeleted: false,
-			})
-			const found = (list.data.items ?? [])[0]
-			if (found?.id) {
-				if (reqRef) await reqRef.set({ status: 'done', eventId: found.id }, { merge: true })
-				return NextResponse.json({ ok: true, eventId: found.id })
-			}
-		}
-
-		// 6) Тело события
+		// 4) Подготовка тела события
 		const requestBody: calendar_v3.Schema$Event = {
 			summary: title,
 			description,
@@ -153,56 +98,67 @@ export async function POST(req: NextRequest) {
 			},
 		}
 
-		// 7) Если это СЕРИЯ
+		// ====== A. ПОВТОРЯЮЩЕЕСЯ СОБЫТИЕ (СЕРИЯ) ======
+		// ВАЖНО: Больше НЕ читаем/не пишем students/<id>.calendar.*
+		// Это позволяет иметь несколько серий у одного ученика.
 		if (isRecurring) {
-			const sRef = adminDb.doc(`students/${studentId}`).withConverter(studentCalendarConverter)
-			const sSnap = await sRef.get()
-			const existing = sSnap.exists ? sSnap.data() : undefined
-			const existingEventId = existing?.calendar?.calendarEventId
-			const existingCalendarId = existing?.calendar?.calendarId
-
-			let effectiveCalendarId = existingCalendarId || calendarId
-			let eventId: string | undefined
-
-			if (existingEventId) {
-				if (existingCalendarId && calendarId && existingCalendarId !== calendarId) {
-					const moved = await cal.events.move({
-						calendarId: existingCalendarId,
-						eventId: existingEventId,
-						destination: calendarId,
-					})
-					const newId = moved.data.id ?? existingEventId
-					eventId = newId
-					effectiveCalendarId = calendarId
-					await sRef.set({ calendar: { calendarId: effectiveCalendarId, calendarEventId: newId } }, { merge: true })
-				}
-
-				const res = await cal.events.update({
-					calendarId: effectiveCalendarId,
-					eventId: eventId ?? existingEventId,
-					requestBody,
+			// Если есть requestId — пытаемся найти именно ЭТУ серию по studentId+requestId и апдейтить её,
+			// иначе всегда создаём НОВУЮ серию.
+			if (requestId) {
+				const list = await cal.events.list({
+					calendarId,
+					maxResults: 50,
+					privateExtendedProperty: [`studentId=${studentId}`, `requestId=${requestId}`],
+					showDeleted: false,
 				})
-				eventId = res.data.id ?? eventId ?? existingEventId
-			} else {
-				const res = await cal.events.insert({ calendarId, requestBody })
-				const newId = res.data.id ?? undefined
-				if (!newId) {
-					return NextResponse.json({ ok: false, error: 'No event id returned from Google Calendar' }, { status: 500 })
+				const found = (list.data.items ?? [])[0]
+				if (found?.id) {
+					const res = await cal.events.update({
+						calendarId,
+						eventId: found.id,
+						requestBody,
+					})
+					const eventId = res.data.id ?? found.id
+					return NextResponse.json({ ok: true, eventId })
 				}
-				eventId = newId
-				await sRef.set({ calendar: { calendarId, calendarEventId: newId } }, { merge: true })
 			}
 
-			if (!eventId) {
+			// Не нашли по requestId — создаём новую серию
+			const ins = await cal.events.insert({ calendarId, requestBody })
+			const newEventId = ins.data.id ?? undefined
+			if (!newEventId) {
 				return NextResponse.json({ ok: false, error: 'No event id returned from Google Calendar' }, { status: 500 })
 			}
-
-			if (reqRef) await reqRef.set({ status: 'done', eventId }, { merge: true })
-			return NextResponse.json({ ok: true, eventId })
+			return NextResponse.json({ ok: true, eventId: newEventId })
 		}
 
-		// 8) ИНАЧЕ: одиночный урок
-		if (!requestId) {
+		// ====== B. ОДИНОЧНОЕ СОБЫТИЕ ======
+		// Если есть requestId — идемпотентность по studentId+requestId (в окне ±12ч от старта)
+		if (requestId) {
+			const timeMin = new Date(start.getTime() - 12 * 60 * 60 * 1000).toISOString()
+			const timeMax = new Date(start.getTime() + 12 * 60 * 60 * 1000).toISOString()
+			const list = await cal.events.list({
+				calendarId,
+				timeMin,
+				timeMax,
+				singleEvents: true,
+				orderBy: 'startTime',
+				maxResults: 50,
+				privateExtendedProperty: [`studentId=${studentId}`, `requestId=${requestId}`],
+				showDeleted: false,
+			})
+			const found = (list.data.items ?? [])[0]
+			if (found?.id) {
+				const res = await cal.events.update({
+					calendarId,
+					eventId: found.id,
+					requestBody,
+				})
+				const eventId = res.data.id ?? found.id
+				return NextResponse.json({ ok: true, eventId })
+			}
+		} else {
+			// Без requestId — лёгкий дедуп «та же минута + тот же студент»
 			const minuteKey = minuteKeyFromISO(startISO)
 			const timeMin = new Date(start.getTime() - 60_000).toISOString()
 			const timeMax = new Date(start.getTime() + 60_000).toISOString()
@@ -227,18 +183,16 @@ export async function POST(req: NextRequest) {
 					requestBody,
 				})
 				const eventId = res.data.id ?? sameMinute.id
-				if (reqRef) await reqRef.set({ status: 'done', eventId }, { merge: true })
 				return NextResponse.json({ ok: true, eventId })
 			}
 		}
 
+		// Создаём новое одиночное
 		const ins = await cal.events.insert({ calendarId, requestBody })
 		const newEventId = ins.data.id ?? undefined
 		if (!newEventId) {
 			return NextResponse.json({ ok: false, error: 'No event id returned from Google Calendar' }, { status: 500 })
 		}
-
-		if (reqRef) await reqRef.set({ status: 'done', eventId: newEventId }, { merge: true })
 		return NextResponse.json({ ok: true, eventId: newEventId })
 	} catch (e: unknown) {
 		const message = e instanceof Error ? e.message : String(e)
