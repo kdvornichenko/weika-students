@@ -4,9 +4,9 @@ import { adminAuth } from '@/lib/firebaseAdmin'
 import { calendarClientFor } from '@/lib/google'
 
 /**
- * GET /api/calendar/student-events?studentId=...&calendarId=primary&days=90
- * Возвращает будущие занятия ученика (instances),
- * фильтруя по extendedProperties.private.studentId.
+ * GET /api/calendar/student-events?studentId=...&calendarId=primary&days=90&from=ISO&to=ISO
+ * Возвращает занятия ученика (instances), фильтруя по extendedProperties.private.studentId.
+ * Если переданы from/to (ISO), используется точный интервал. Иначе — [now; now+days].
  */
 export async function GET(req: NextRequest) {
 	const idToken = req.headers.get('authorization')?.split('Bearer ')[1]
@@ -18,6 +18,9 @@ export async function GET(req: NextRequest) {
 	const calendarId = url.searchParams.get('calendarId') || 'primary'
 	const days = Number(url.searchParams.get('days') || 180)
 
+	const fromISO = url.searchParams.get('from')
+	const toISO = url.searchParams.get('to')
+
 	if (!studentId) {
 		return NextResponse.json({ error: 'Missing studentId' }, { status: 400 })
 	}
@@ -25,8 +28,10 @@ export async function GET(req: NextRequest) {
 	const cal = await calendarClientFor(uid)
 
 	const now = new Date()
-	const timeMin = now.toISOString()
-	const timeMax = new Date(now.getTime() + days * 24 * 60 * 60 * 1000).toISOString()
+	const timeMin = fromISO ? new Date(fromISO).toISOString() : now.toISOString()
+	const timeMax = toISO
+		? new Date(toISO).toISOString()
+		: new Date(now.getTime() + days * 24 * 60 * 60 * 1000).toISOString()
 
 	// singleEvents=true разворачивает повторения в отдельные экземпляры
 	const { data } = await cal.events.list({
@@ -40,7 +45,6 @@ export async function GET(req: NextRequest) {
 		showDeleted: false,
 	})
 
-	// Вернём компактный список
 	const items = (data.items || []).map((e) => ({
 		id: e.id!,
 		recurringEventId: e.recurringEventId,

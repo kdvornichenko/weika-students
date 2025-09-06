@@ -31,3 +31,21 @@ export type StudentWrite = Omit<StudentDoc, 'createdAt' | 'updatedAt'> & {
 	createdAt?: FieldValue
 	updatedAt?: FieldValue
 }
+
+export type Row = {
+	id: string
+	recurringEventId?: string
+	start?: string // ISO
+	end?: string // ISO
+	summary?: string
+}
+
+export type ViewMode = 'list' | 'week'
+
+export type EditPayload = {
+	target: Row
+	newStart: Date
+	durationMins: number
+	applyToAll: boolean
+	repeatWeekly: boolean
+}

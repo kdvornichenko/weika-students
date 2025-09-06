@@ -5,8 +5,8 @@ import { useEffect, useState } from 'react'
 import { doc, onSnapshot, type DocumentData, type FirestoreDataConverter } from 'firebase/firestore'
 import { useParams } from 'next/navigation'
 
-import StudentForm from '@/components/student-form'
-import StudentLessonsCard from '@/components/student-lessons-card'
+import StudentForm from '@/components/student/StudentForm'
+import StudentLessonsTable from '@/components/student/StudentLessonsTable'
 import { Skeleton } from '@/components/ui/skeleton'
 import { db } from '@/lib/firebase'
 import type { StudentDoc } from '@/types/student'
@@ -46,7 +46,7 @@ export default function EditStudentPage() {
 		<>
 			<StudentForm mode="edit" docId={initial.id} initial={initial} />
 			<div className="mt-6">
-				<StudentLessonsCard studentId={initial.id} />
+				<StudentLessonsTable studentId={initial.id} />
 			</div>
 		</>
 	)

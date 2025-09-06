@@ -6,7 +6,7 @@ import { onAuthStateChanged, User } from 'firebase/auth'
 
 import { auth } from '@/lib/firebase'
 
-import { SignInButton } from './auth-buttons'
+import { SignInButton } from './AuthButtons'
 
 export default function AuthGate({ children }: { children: ReactNode }) {
 	const [user, setUser] = useState<User | null>(null)
